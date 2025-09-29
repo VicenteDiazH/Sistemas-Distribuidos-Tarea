@@ -14,14 +14,16 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - DB_NAME=yahoo_dataset
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - postgres
+      - llm
 
   postgres:
     image: postgres:15
     restart: always
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -45,16 +47,14 @@ services:
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
 
   csv_loader:
     build:
       context: ./loader
     restart: "no"
     depends_on:
-      postgres:
-        condition: service_healthy
+      - postgres
     environment:
       - PGHOST=postgres
       - PGPORT=5432
@@ -64,7 +64,21 @@ services:
       - CSV_PATH=/data/test.csv
       - TABLE_NAME=yahoo_answers
     volumes:
-      - "C:/Tarea SD/Dataset-Documentation:/data:ro"
+      - ./Dataset-Documentation:/data:ro
+
+  llm:
+    build: ./llm
+    environment:
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    ports:
+      - "5000:5000"
+    depends_on:
+      - postgres
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:5000/health || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
 
 volumes:
   postgres_data:
