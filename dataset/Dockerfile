@@ -1,18 +1,19 @@
-# Imagen base
 FROM node:18
 
-# Carpeta de trabajo
 WORKDIR /app
 
-# Copiar package.json y dependencias
+# Copiar solo package.json y package-lock.json primero (para aprovechar cache)
 COPY package*.json ./
-RUN npm install
 
-# Copiar el resto del c�digo
+# Instalar dependencias (incluye wait-on si lo agregas en package.json)
+RUN npm install
+RUN npm install -g wait-on
+
+# Copiar el resto del código
 COPY . .
 
-# Exponer el puerto de Angular
+# Puerto que expone tu app (asegúrate que npm start use 3000)
 EXPOSE 3000
 
-# Comando por defecto
+# Comando de arranque
 CMD ["npm", "start"]
