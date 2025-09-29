@@ -28,6 +28,11 @@ services:
       POSTGRES_DB: yahoo_dataset
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d yahoo_dataset"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
   pgadmin:
     image: dpage/pgadmin4
@@ -40,7 +45,26 @@ services:
     volumes:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+
+  csv_loader:
+    build:
+      context: ./loader
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - PGHOST=postgres
+      - PGPORT=5432
+      - PGUSER=postgres
+      - PGPASSWORD=postgres
+      - PGDATABASE=yahoo_dataset
+      - CSV_PATH=/data/test.csv
+      - TABLE_NAME=yahoo_answers
+    volumes:
+      - "C:/Tarea SD/Dataset-Documentation:/data:ro"
 
 volumes:
   postgres_data:
