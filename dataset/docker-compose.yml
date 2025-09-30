@@ -23,7 +23,7 @@ services:
     image: postgres:15
     restart: always
     ports:
-      - "5432:5432"
+      - "5433:5432"
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
@@ -76,9 +76,53 @@ services:
       - postgres
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:5000/health || exit 1"]
-      interval: 5s
-      timeout: 2s
-      retries: 5
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  traffic-poisson: # generador de tráfico con distribución de poisson
+    build: ./traffic-generator
+    restart: "no"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=yahoo_dataset
+      - LLM_SERVICE_URL=http://llm:5000/ask
+      - DISTRIBUTION_TYPE=poisson
+      - LAMBDA=5
+      - TOTAL_QUERIES=100
+    depends_on:
+      postgres:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+    profiles: # se ocupa perfil para ejecutarlo
+      - poisson
+
+  traffic-uniform: # generador de tráfico con distribución uniforme
+    build: ./traffic-generator
+    restart: "no"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=yahoo_dataset
+      - LLM_SERVICE_URL=http://llm:5000/ask
+      - DISTRIBUTION_TYPE=uniform
+      - MIN_INTERVAL=100
+      - MAX_INTERVAL=2000
+      - TOTAL_QUERIES=100
+    depends_on:
+      postgres:
+        condition: service_healthy
+      llm:
+        condition: service_healthy
+    profiles:
+      - uniform # perfil uniforme
 
 volumes:
   postgres_data:
