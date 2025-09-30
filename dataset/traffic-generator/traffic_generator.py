@@ -14,6 +14,8 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
 DB_NAME = os.getenv("DB_NAME", "yahoo_dataset")
 
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm:5000/ask")
+SCORE_SERVICE_URL = os.getenv("SCORE_SERVICE_URL", "http://score:6000/score")  # AÑADIDO
+SCORE_METHOD = os.getenv("SCORE_METHOD", "combined")  # AÑADIDO: tfidf, jaccard, levenshtein, combined
 
 # Parámetros de distribución
 DISTRIBUTION_TYPE = os.getenv("DISTRIBUTION_TYPE", "poisson")  # 'poisson' o 'uniform'
@@ -28,7 +30,9 @@ stats = {
     "successful": 0,
     "failed": 0,
     "start_time": None,
-    "intervals": []
+    "intervals": [],
+    "total_score": 0.0,  # AÑADIDO
+    "score_count": 0     # AÑADIDO
 }
 
 
@@ -97,6 +101,34 @@ def query_llm(question):
         raise
 
 
+# FUNCIÓN AÑADIDA: Calcular score
+def calculate_score(llm_answer, best_answer):
+    """Calcula el score de calidad entre la respuesta del LLM y la mejor respuesta"""
+    try:
+        response = requests.post(
+            SCORE_SERVICE_URL,
+            json={
+                "llm_answer": llm_answer,
+                "best_answer": best_answer,
+                "method": SCORE_METHOD
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        # Si es método combined, retornar el score recomendado
+        if SCORE_METHOD == "combined":
+            return data.get("recommended_score", 0.0)
+        else:
+            return data.get("score", 0.0)
+    
+    except Exception as e:
+        print(f"❌ Error al calcular score: {e}")
+        return 0.0  # Retornar 0 en caso de error
+
+
 def generate_poisson_interval(lambda_rate):
     """
     Genera un intervalo de tiempo siguiendo una distribución de Poisson.
@@ -120,6 +152,7 @@ def print_stats():
     
     elapsed = time.time() - stats["start_time"]
     rate = stats["total_sent"] / elapsed if elapsed > 0 else 0
+    avg_score = stats["total_score"] / stats["score_count"] if stats["score_count"] > 0 else 0.0  # AÑADIDO
     
     print("\n📊 === ESTADÍSTICAS ===")
     print(f"   Total enviadas: {stats['total_sent']}")
@@ -127,6 +160,7 @@ def print_stats():
     print(f"   Fallidas: {stats['failed']}")
     print(f"   Tiempo transcurrido: {elapsed:.2f}s")
     print(f"   Tasa promedio: {rate:.2f} consultas/s")
+    print(f"   Score promedio: {avg_score:.4f}")  # AÑADIDO
     
     if stats["intervals"]:
         avg_interval = np.mean(stats["intervals"])
@@ -172,8 +206,14 @@ def generate_traffic():
                 print(f"   ✅ Respuesta obtenida en {query_time:.2f}s")
                 print(f"   LLM: {llm_answer[:80]}...")
                 
+                # AÑADIDO: Calcular score de calidad
+                quality_score = calculate_score(llm_answer, question['best_answer'])
+                print(f"   🎯 Score de calidad: {quality_score:.4f}")
+                
                 stats["successful"] += 1
                 stats["total_sent"] += 1
+                stats["total_score"] += quality_score  # AÑADIDO
+                stats["score_count"] += 1              # AÑADIDO
                 
                 # Mostrar estadísticas cada 10 consultas
                 if (i + 1) % 10 == 0:

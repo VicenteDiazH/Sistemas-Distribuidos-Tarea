@@ -17,7 +17,7 @@ def health():
 @app.get("/ask")
 async def ask(query: str):
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash")
+        model = genai.GenerativeModel("gemini-2.5-flash-lite")
         response = model.generate_content(query)
         return {"answer": response.text}
     except Exception as e:
