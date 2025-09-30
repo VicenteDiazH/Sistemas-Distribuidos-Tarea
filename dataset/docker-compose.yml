@@ -1,24 +1,4 @@
-version: "3.8"
-
 services:
-  dataset:
-    build: .
-    ports:
-      - "3000:3000"
-    volumes:
-      - ./:/app
-      - node_modules:/app/node_modules
-    environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_NAME=yahoo_dataset
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-    depends_on:
-      - postgres
-      - llm
-
   postgres:
     image: postgres:15
     restart: always
@@ -54,7 +34,8 @@ services:
       context: ./loader
     restart: "no"
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
     environment:
       - PGHOST=postgres
       - PGPORT=5432
@@ -66,24 +47,71 @@ services:
     volumes:
       - ./Dataset-Documentation:/data:ro
 
+  # Ollama con límites de recursos para evitar congelamiento
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      - OLLAMA_NUM_PARALLEL=1          # Solo 1 request a la vez
+      - OLLAMA_MAX_LOADED_MODELS=1      # Solo 1 modelo en memoria
+      - OLLAMA_KEEP_ALIVE=5m            # Descargar modelo después de 5 min inactivo
+    deploy:
+      resources:
+        limits:
+          cpus: '2.0'      # Máximo 2 cores
+          memory: 4G       # Máximo 4GB RAM
+        reservations:
+          memory: 2G       # Mínimo 2GB RAM
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
   llm:
     build: ./llm
     environment:
-      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=llama3.2:1b
+      - REQUEST_TIMEOUT=60
     ports:
       - "5000:5000"
     depends_on:
-      - postgres
+      ollama:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:5000/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 10
-      start_period: 40s
+      interval: 5s
+      timeout: 2s
+      retries: 5
 
-  traffic-poisson: # generador de tráfico con distribución de poisson
+  dataset:
+    build: .
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./:/app
+      - node_modules:/app/node_modules
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=yahoo_dataset
+    depends_on:
+      - postgres
+      - llm
+
+  traffic-poisson:
     build: ./traffic-generator
     restart: "no"
+    profiles: ["poisson"]
     environment:
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -99,12 +127,11 @@ services:
         condition: service_healthy
       llm:
         condition: service_healthy
-    profiles: # se ocupa perfil para ejecutarlo
-      - poisson
 
-  traffic-uniform: # generador de tráfico con distribución uniforme
+  traffic-uniform:
     build: ./traffic-generator
     restart: "no"
+    profiles: ["uniform"]
     environment:
       - DB_HOST=postgres
       - DB_PORT=5432
@@ -121,10 +148,9 @@ services:
         condition: service_healthy
       llm:
         condition: service_healthy
-    profiles:
-      - uniform # perfil uniforme
 
 volumes:
   postgres_data:
   node_modules:
   pgadmin_data:
+  ollama_data:
