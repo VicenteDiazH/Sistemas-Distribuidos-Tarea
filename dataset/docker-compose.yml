@@ -167,6 +167,26 @@ services:
     networks:
       - yahoo_network
 
+  storage: # almacenamiento
+    build: ./storage
+    ports:
+      - "7000:7000"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=yahoo_dataset
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:7000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+      
   traffic-poisson:
     build: ./traffic-generator
     restart: "no"
