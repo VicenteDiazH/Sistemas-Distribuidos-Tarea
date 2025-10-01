@@ -14,14 +14,15 @@ DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
 DB_NAME = os.getenv("DB_NAME", "yahoo_dataset")
 
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm:5000/ask")
-SCORE_SERVICE_URL = os.getenv("SCORE_SERVICE_URL", "http://score:6000/score")  # AÑADIDO
-SCORE_METHOD = os.getenv("SCORE_METHOD", "combined")  # AÑADIDO: tfidf, jaccard, levenshtein, combined
+SCORE_SERVICE_URL = os.getenv("SCORE_SERVICE_URL", "http://score:6000/score")
+STORAGE_SERVICE_URL = os.getenv("STORAGE_SERVICE_URL", "http://storage:7000/store")  # VARIABLE DE ENTORNO NUEVA STORAGE
+SCORE_METHOD = os.getenv("SCORE_METHOD", "combined")
 
 # Parámetros de distribución
-DISTRIBUTION_TYPE = os.getenv("DISTRIBUTION_TYPE", "poisson")  # 'poisson' o 'uniform'
-LAMBDA = float(os.getenv("LAMBDA", "5"))  # Para Poisson (consultas/segundo)
-MIN_INTERVAL = int(os.getenv("MIN_INTERVAL", "100"))  # Para uniforme (ms)
-MAX_INTERVAL = int(os.getenv("MAX_INTERVAL", "2000"))  # Para uniforme (ms)
+DISTRIBUTION_TYPE = os.getenv("DISTRIBUTION_TYPE", "poisson")
+LAMBDA = float(os.getenv("LAMBDA", "5"))
+MIN_INTERVAL = int(os.getenv("MIN_INTERVAL", "100"))
+MAX_INTERVAL = int(os.getenv("MAX_INTERVAL", "2000"))
 TOTAL_QUERIES = int(os.getenv("TOTAL_QUERIES", "100"))
 
 # Estadísticas
@@ -31,8 +32,9 @@ stats = {
     "failed": 0,
     "start_time": None,
     "intervals": [],
-    "total_score": 0.0,  # AÑADIDO
-    "score_count": 0     # AÑADIDO
+    "total_score": 0.0,
+    "score_count": 0,
+    "stored_count": 0  # AÑADIDO LA CANTIDAD DE STORED COUNT
 }
 
 
@@ -83,7 +85,6 @@ def get_random_question(conn):
 def query_llm(question):
     """Consulta al LLM con una pregunta"""
     try:
-        # Construir la query combinando título y contenido
         query = f"{question['question_title']} {question['question_content']}"
         
         response = requests.get(
@@ -101,7 +102,6 @@ def query_llm(question):
         raise
 
 
-# FUNCIÓN AÑADIDA: Calcular score
 def calculate_score(llm_answer, best_answer):
     """Calcula el score de calidad entre la respuesta del LLM y la mejor respuesta"""
     try:
@@ -118,7 +118,6 @@ def calculate_score(llm_answer, best_answer):
         
         data = response.json()
         
-        # Si es método combined, retornar el score recomendado
         if SCORE_METHOD == "combined":
             return data.get("recommended_score", 0.0)
         else:
@@ -126,15 +125,37 @@ def calculate_score(llm_answer, best_answer):
     
     except Exception as e:
         print(f"❌ Error al calcular score: {e}")
-        return 0.0  # Retornar 0 en caso de error
+        return 0.0
+
+
+# FUNCIÓN AÑADIDA DE ALMACENAR RESULTADO
+def store_result(question, llm_answer, quality_score):
+    """Almacena el resultado en el servicio de almacenamiento"""
+    try:
+        response = requests.post(
+            STORAGE_SERVICE_URL,
+            json={
+                "question_id": question['id'],
+                "question_title": question['question_title'],
+                "question_content": question['question_content'],
+                "best_answer": question['best_answer'],
+                "llm_answer": llm_answer,
+                "quality_score": quality_score
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        return data
+    
+    except Exception as e:
+        print(f"❌ Error al almacenar resultado: {e}")
+        return None
 
 
 def generate_poisson_interval(lambda_rate):
-    """
-    Genera un intervalo de tiempo siguiendo una distribución de Poisson.
-    Usa distribución exponencial para tiempos entre eventos.
-    """
-    # Tiempo entre eventos = -ln(U) / λ
+    """Genera un intervalo de tiempo siguiendo una distribución de Poisson"""
     u = random.random()
     interval_seconds = -np.log(1 - u) / lambda_rate
     return interval_seconds
@@ -152,15 +173,16 @@ def print_stats():
     
     elapsed = time.time() - stats["start_time"]
     rate = stats["total_sent"] / elapsed if elapsed > 0 else 0
-    avg_score = stats["total_score"] / stats["score_count"] if stats["score_count"] > 0 else 0.0  # AÑADIDO
+    avg_score = stats["total_score"] / stats["score_count"] if stats["score_count"] > 0 else 0.0
     
     print("\n📊 === ESTADÍSTICAS ===")
     print(f"   Total enviadas: {stats['total_sent']}")
     print(f"   Exitosas: {stats['successful']}")
     print(f"   Fallidas: {stats['failed']}")
+    print(f"   Almacenadas: {stats['stored_count']}")  # ALMACENADAS
     print(f"   Tiempo transcurrido: {elapsed:.2f}s")
     print(f"   Tasa promedio: {rate:.2f} consultas/s")
-    print(f"   Score promedio: {avg_score:.4f}")  # AÑADIDO
+    print(f"   Score promedio: {avg_score:.4f}")
     
     if stats["intervals"]:
         avg_interval = np.mean(stats["intervals"])
@@ -183,7 +205,6 @@ def generate_traffic():
     
     print(f"📊 Total de consultas a generar: {TOTAL_QUERIES}\n")
     
-    # Conectar a la base de datos
     conn = connect_db()
     print("✅ Conectado a la base de datos\n")
     
@@ -192,13 +213,11 @@ def generate_traffic():
     try:
         for i in range(TOTAL_QUERIES):
             try:
-                # Obtener pregunta aleatoria
                 question = get_random_question(conn)
                 
                 print(f"📤 [{i + 1}/{TOTAL_QUERIES}] Pregunta ID: {question['id']}")
                 print(f"   Título: {question['question_title'][:60]}...")
                 
-                # Consultar al LLM
                 start_query = time.time()
                 llm_answer = query_llm(question)
                 query_time = time.time() - start_query
@@ -206,20 +225,23 @@ def generate_traffic():
                 print(f"   ✅ Respuesta obtenida en {query_time:.2f}s")
                 print(f"   LLM: {llm_answer[:80]}...")
                 
-                # AÑADIDO: Calcular score de calidad
                 quality_score = calculate_score(llm_answer, question['best_answer'])
                 print(f"   🎯 Score de calidad: {quality_score:.4f}")
                 
+                # ALMACENAR RESULTADOS
+                storage_result = store_result(question, llm_answer, quality_score)
+                if storage_result:
+                    print(f"   💾 {storage_result['message']}")
+                    stats["stored_count"] += 1
+                
                 stats["successful"] += 1
                 stats["total_sent"] += 1
-                stats["total_score"] += quality_score  # AÑADIDO
-                stats["score_count"] += 1              # AÑADIDO
+                stats["total_score"] += quality_score
+                stats["score_count"] += 1
                 
-                # Mostrar estadísticas cada 10 consultas
                 if (i + 1) % 10 == 0:
                     print_stats()
                 
-                # Calcular siguiente intervalo (solo si no es la última consulta)
                 if i < TOTAL_QUERIES - 1:
                     if DISTRIBUTION_TYPE == "poisson":
                         interval = generate_poisson_interval(LAMBDA)
@@ -246,7 +268,6 @@ def generate_traffic():
 
 if __name__ == "__main__":
     try:
-        # Esperar un poco para que los servicios estén listos
         print("⏳ Esperando que los servicios estén listos...")
         time.sleep(1)
         
