@@ -12,7 +12,7 @@ services:
       POSTGRES_DB: yahoo_dataset
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql  # AGREGAR ESTA LÍNEA
+      - ./init_db.sql:/docker-entrypoint-initdb.d/init_db.sql
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d yahoo_dataset"]
       interval: 5s
@@ -118,6 +118,27 @@ services:
     networks:
       - yahoo_network
 
+  storage:
+    build: ./storage
+    ports:
+      - "7000:7000"
+    environment:
+      - DB_HOST=postgres
+      - DB_PORT=5432
+      - DB_USER=postgres
+      - DB_PASSWORD=postgres
+      - DB_NAME=yahoo_dataset
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail http://localhost:7000/health || exit 1"]
+      interval: 5s
+      timeout: 2s
+      retries: 5
+    networks:
+      - yahoo_network
+
   cache:
     build: ./cache
     ports:
@@ -127,7 +148,8 @@ services:
       - CACHE_POLICY=LRU
       - CACHE_TTL=3600
       - LLM_SERVICE_URL=http://llm:5000/ask
-      - SCORE_SERVICE_URL=http://score:6000/score  # CAMBIAR DE 5001 A 6000
+      - SCORE_SERVICE_URL=http://score:6000/score
+      - STORAGE_SERVICE_URL=http://storage:7000/store
       - DB_HOST=postgres
       - DB_PORT=5432
       - DB_USER=postgres
@@ -139,6 +161,8 @@ services:
       llm:
         condition: service_healthy
       score:
+        condition: service_healthy
+      storage:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "curl --fail http://localhost:5002/health || exit 1"]
@@ -167,26 +191,6 @@ services:
     networks:
       - yahoo_network
 
-  storage: # almacenamiento
-    build: ./storage
-    ports:
-      - "7000:7000"
-    environment:
-      - DB_HOST=postgres
-      - DB_PORT=5432
-      - DB_USER=postgres
-      - DB_PASSWORD=postgres
-      - DB_NAME=yahoo_dataset
-    depends_on:
-      postgres:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD-SHELL", "curl --fail http://localhost:7000/health || exit 1"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 20s
-      
   traffic-poisson:
     build: ./traffic-generator
     restart: "no"
@@ -197,7 +201,7 @@ services:
       - DB_USER=postgres
       - DB_PASSWORD=postgres
       - DB_NAME=yahoo_dataset
-      - CACHE_SERVICE_URL=http://cache:5002/query  # CAMBIO AQUÍ
+      - CACHE_SERVICE_URL=http://cache:5002/query
       - DISTRIBUTION_TYPE=poisson
       - LAMBDA=5
       - TOTAL_QUERIES=100
@@ -205,9 +209,9 @@ services:
       postgres:
         condition: service_healthy
       cache:
-        condition: service_healthy  # CAMBIO AQUÍ
+        condition: service_healthy
     networks:
-      - yahoo_network
+      - yahoo_network  # ← ESTA LÍNEA ES CRÍTICA
 
   traffic-uniform:
     build: ./traffic-generator

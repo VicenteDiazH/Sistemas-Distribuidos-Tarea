@@ -51,7 +51,8 @@ def init_database():
             quality_score FLOAT,
             access_count INT DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_accessed TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
     
@@ -98,14 +99,15 @@ def store_result(result: QueryResult):
         existing = cur.fetchone()
         
         if existing:
-            # Actualizar contador de accesos y timestamp
+            # Actualizar contador de accesos y timestamps
             result_id = existing[0]
             new_count = existing[1] + 1
             
             cur.execute("""
                 UPDATE query_results 
                 SET access_count = %s,
-                    updated_at = CURRENT_TIMESTAMP
+                    updated_at = CURRENT_TIMESTAMP,
+                    last_accessed = CURRENT_TIMESTAMP
                 WHERE id = %s
             """, (new_count, result_id))
             
@@ -165,7 +167,7 @@ def get_stats():
         total = cur.fetchone()['total']
         
         # Score promedio
-        cur.execute("SELECT AVG(quality_score) as avg_score FROM query_results")
+        cur.execute("SELECT AVG(quality_score) as avg_score FROM query_results WHERE quality_score > 0")
         avg_score = cur.fetchone()['avg_score']
         
         # Total de accesos (suma de todos los contadores)
@@ -185,6 +187,7 @@ def get_stats():
         cur.execute("""
             SELECT question_id, question_title, quality_score 
             FROM query_results 
+            WHERE quality_score > 0
             ORDER BY quality_score DESC 
             LIMIT 1
         """)
@@ -194,6 +197,7 @@ def get_stats():
         cur.execute("""
             SELECT question_id, question_title, quality_score 
             FROM query_results 
+            WHERE quality_score > 0
             ORDER BY quality_score ASC 
             LIMIT 1
         """)

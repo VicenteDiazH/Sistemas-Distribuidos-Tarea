@@ -4,8 +4,6 @@ import os
 import time
 import hashlib
 from collections import OrderedDict
-from datetime import datetime
-import psycopg2
 from typing import Optional, Dict, Any
 
 # Configuración
@@ -14,11 +12,7 @@ CACHE_POLICY = os.getenv("CACHE_POLICY", "LRU")  # LRU, LFU, FIFO
 CACHE_TTL = int(os.getenv("CACHE_TTL", "3600"))  # segundos
 LLM_SERVICE_URL = os.getenv("LLM_SERVICE_URL", "http://llm:5000/ask")
 SCORE_SERVICE_URL = os.getenv("SCORE_SERVICE_URL", "http://score:6000/score")
-DB_HOST = os.getenv("DB_HOST", "postgres")
-DB_PORT = os.getenv("DB_PORT", "5432")
-DB_USER = os.getenv("DB_USER", "postgres")
-DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
-DB_NAME = os.getenv("DB_NAME", "yahoo_dataset")
+STORAGE_SERVICE_URL = os.getenv("STORAGE_SERVICE_URL", "http://storage:7000/store")  # NUEVO
 
 app = FastAPI()
 
@@ -50,7 +44,7 @@ class CacheSystem:
         self.policy = policy.upper()
         self.ttl = ttl
         self.cache: Dict[str, CacheEntry] = {}
-        self.access_order = OrderedDict()  # Para LRU y FIFO
+        self.access_order = OrderedDict()
         
     def _generate_key(self, question_title: str, question_content: str) -> str:
         """Genera clave única para la pregunta"""
@@ -69,16 +63,11 @@ class CacheSystem:
         key_to_remove = None
         
         if self.policy == "LRU":
-            # Least Recently Used
             key_to_remove = next(iter(self.access_order))
-            
         elif self.policy == "LFU":
-            # Least Frequently Used
             key_to_remove = min(self.cache.items(), 
                               key=lambda x: x[1].access_count)[0]
-            
         elif self.policy == "FIFO":
-            # First In First Out
             key_to_remove = next(iter(self.access_order))
         
         if key_to_remove:
@@ -97,18 +86,15 @@ class CacheSystem:
         
         entry = self.cache[key]
         
-        # Verificar expiración
         if self._is_expired(entry):
             del self.cache[key]
             if key in self.access_order:
                 del self.access_order[key]
             return None
         
-        # Actualizar estadísticas de acceso
         entry.access_count += 1
         entry.last_access = time.time()
         
-        # Actualizar orden de acceso para LRU
         if self.policy == "LRU":
             self.access_order.move_to_end(key)
         
@@ -124,27 +110,22 @@ class CacheSystem:
         """Agrega entrada al caché"""
         key = self._generate_key(question_title, question_content)
         
-        # Si ya existe, actualizar
         if key in self.cache:
             self.cache[key].access_count += 1
             self.cache[key].last_access = time.time()
             return
         
-        # Si está lleno, evict
         if len(self.cache) >= self.max_size:
             self._evict()
         
-        # Agregar nueva entrada
         entry = CacheEntry(key, llm_answer, original_answer)
         self.cache[key] = entry
         self.access_order[key] = True
     
     def size(self) -> int:
-        """Retorna tamaño actual del caché"""
         return len(self.cache)
     
     def clear(self):
-        """Limpia el caché"""
         self.cache.clear()
         self.access_order.clear()
 
@@ -158,79 +139,59 @@ print(f"   - Policy: {CACHE_POLICY}")
 print(f"   - TTL: {CACHE_TTL}s")
 
 
-def get_db_connection():
-    """Crea conexión a PostgreSQL"""
-    return psycopg2.connect(
-        host=DB_HOST,
-        port=DB_PORT,
-        user=DB_USER,
-        password=DB_PASSWORD,
-        database=DB_NAME
-    )
-
-
-def update_storage_hit(question_id: int, access_count: int):
-    """Actualiza contador de accesos en la BD (cache hit)"""
+def update_storage_hit(question_id: int, question_title: str, question_content: str,
+                       original_answer: str, llm_answer: str, quality_score: float):
+    """
+    Llama al servicio de storage cuando hay un cache hit.
+    El storage incrementará el access_count automáticamente.
+    """
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        cur.execute("""
-            UPDATE query_results 
-            SET access_count = %s, 
-                last_accessed = NOW()
-            WHERE question_id = %s
-        """, (access_count, question_id))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        print(f"✅ Storage updated (HIT): question_id={question_id}, count={access_count}")
+        response = requests.post(
+            STORAGE_SERVICE_URL,
+            json={
+                "question_id": question_id,
+                "question_title": question_title,
+                "question_content": question_content,
+                "best_answer": original_answer,
+                "llm_answer": llm_answer,
+                "quality_score": quality_score
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+        print(f"✅ Storage updated (HIT): {data.get('message')}")
+        return data
     except Exception as e:
         print(f"❌ Error updating storage: {e}")
+        return None
 
 
 def save_to_storage(question_id: int, question_title: str, question_content: str,
                    original_answer: str, llm_answer: str, score: float):
-    """Guarda resultado en la BD (cache miss)"""
+    """
+    Llama al servicio de storage cuando hay un cache miss.
+    """
     try:
-        conn = get_db_connection()
-        cur = conn.cursor()
-        
-        # Verificar si ya existe
-        cur.execute("""
-            SELECT id, access_count FROM query_results 
-            WHERE question_id = %s
-        """, (question_id,))
-        
-        existing = cur.fetchone()
-        
-        if existing:
-            # Actualizar contador
-            cur.execute("""
-                UPDATE query_results 
-                SET access_count = access_count + 1,
-                    last_accessed = NOW()
-                WHERE question_id = %s
-            """, (question_id,))
-        else:
-            # Insertar nuevo registro
-            cur.execute("""
-                INSERT INTO query_results 
-                (question_id, question_title, question_content, 
-                 original_answer, llm_answer, score, access_count)
-                VALUES (%s, %s, %s, %s, %s, %s, 1)
-            """, (question_id, question_title, question_content, 
-                  original_answer, llm_answer, score))
-        
-        conn.commit()
-        cur.close()
-        conn.close()
-        
-        print(f"✅ Saved to storage: question_id={question_id}, score={score:.3f}")
+        response = requests.post(
+            STORAGE_SERVICE_URL,
+            json={
+                "question_id": question_id,
+                "question_title": question_title,
+                "question_content": question_content,
+                "best_answer": original_answer,
+                "llm_answer": llm_answer,
+                "quality_score": score
+            },
+            timeout=10
+        )
+        response.raise_for_status()
+        data = response.json()
+        print(f"✅ Saved to storage (MISS): {data.get('message')}")
+        return data
     except Exception as e:
         print(f"❌ Error saving to storage: {e}")
+        return None
 
 
 @app.get("/health")
@@ -266,8 +227,12 @@ async def process_query(
             stats["hits"] += 1
             print(f"🎯 CACHE HIT: {question_title[:50]}... (count: {cached['access_count']})")
             
-            # Actualizar storage con nuevo contador
-            update_storage_hit(question_id, cached['access_count'])
+            # Actualizar storage - el storage incrementará access_count
+            # Necesitamos un score, usamos 0.0 para hits (no recalculamos)
+            update_storage_hit(
+                question_id, question_title, question_content,
+                cached['original_answer'], cached['llm_answer'], 0.0
+            )
             
             return {
                 "status": "hit",
@@ -281,7 +246,6 @@ async def process_query(
         stats["misses"] += 1
         print(f"❌ CACHE MISS: {question_title[:50]}...")
         
-        # Construir query para LLM
         title = str(question_title).strip()
         content = str(question_content).strip()
         
@@ -310,7 +274,7 @@ async def process_query(
             json={
                 "llm_answer": llm_answer,
                 "best_answer": original_answer,
-                "method": "tfidf"  # o "combined" para usar todas las métricas
+                "method": "tfidf"
             },
             timeout=10
         )
@@ -320,7 +284,7 @@ async def process_query(
         # 4. Guardar en caché
         cache.put(question_title, question_content, llm_answer, original_answer)
         
-        # 5. Guardar en storage
+        # 5. Guardar en storage (el storage creará el registro con access_count=1)
         save_to_storage(
             question_id, question_title, question_content,
             original_answer, llm_answer, score
@@ -366,7 +330,7 @@ def get_stats():
 
 @app.post("/clear")
 def clear_cache():
-    """Limpia el caché (útil para experimentos)"""
+    """Limpia el caché"""
     cache.clear()
     stats["hits"] = 0
     stats["misses"] = 0
