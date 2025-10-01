@@ -1,3 +1,5 @@
+version: '3.8'
+
 services:
   postgres:
     image: postgres:15
@@ -15,6 +17,8 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    networks:
+      - yahoo_network
 
   pgadmin:
     image: dpage/pgadmin4
@@ -28,6 +32,8 @@ services:
       - pgadmin_data:/var/lib/pgadmin
     depends_on:
       - postgres
+    networks:
+      - yahoo_network
 
   csv_loader:
     build:
@@ -46,8 +52,9 @@ services:
       - TABLE_NAME=yahoo_answers
     volumes:
       - ./Dataset-Documentation:/data:ro
+    networks:
+      - yahoo_network
 
-  # Ollama con límites de recursos para evitar congelamiento
   ollama:
     image: ollama/ollama:latest
     ports:
@@ -55,22 +62,24 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     environment:
-      - OLLAMA_NUM_PARALLEL=1          # Solo 1 request a la vez
-      - OLLAMA_MAX_LOADED_MODELS=1      # Solo 1 modelo en memoria
-      - OLLAMA_KEEP_ALIVE=5m            # Descargar modelo después de 5 min inactivo
+      - OLLAMA_NUM_PARALLEL=1
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_KEEP_ALIVE=5m
     deploy:
       resources:
         limits:
-          cpus: '2.0'      # Máximo 2 cores
-          memory: 4G       # Máximo 4GB RAM
+          cpus: '2.0'
+          memory: 4G
         reservations:
-          memory: 2G       # Mínimo 2GB RAM
+          memory: 2G
     healthcheck:
       test: ["CMD-SHELL", "ollama list || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
+    networks:
+      - yahoo_network
 
   llm:
     build: ./llm
@@ -90,6 +99,8 @@ services:
       interval: 5s
       timeout: 2s
       retries: 5
+    networks:
+      - yahoo_network
 
   dataset:
     build: .
@@ -107,6 +118,8 @@ services:
     depends_on:
       - postgres
       - llm
+    networks:
+      - yahoo_network
 
   traffic-poisson:
     build: ./traffic-generator
@@ -127,6 +140,8 @@ services:
         condition: service_healthy
       llm:
         condition: service_healthy
+    networks:
+      - yahoo_network
 
   traffic-uniform:
     build: ./traffic-generator
@@ -148,9 +163,15 @@ services:
         condition: service_healthy
       llm:
         condition: service_healthy
+    networks:
+      - yahoo_network
 
 volumes:
   postgres_data:
   node_modules:
   pgadmin_data:
   ollama_data:
+
+networks:
+  yahoo_network:
+    driver: bridge
